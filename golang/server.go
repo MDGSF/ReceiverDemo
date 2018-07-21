@@ -77,6 +77,62 @@ func Index(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	// try to recv device client auth message.
+	_, message, err := conn.ReadMessage()
+	if err != nil {
+		log.Error("read: err = %v", err)
+		return
+	}
+
+	m := &TAuth{}
+	if err := msgpack.Unmarshal(message, m); err != nil {
+		log.Error("not auth message")
+		return
+	}
+
+	if m.Type != "auth" {
+		log.Error("Invalid auth msg = %v", m)
+		return
+	}
+
+	log.Info("recv auth msg = %v", m)
+
+	// send device id and token to tokenServer to verify is valid or not.
+	rsp, err := http.PostForm("https://setup.minieye.cc/services/report/agent/token/verify",
+		url.Values{"device": {m.Device}, "token": {m.Token}})
+	if err != nil {
+		log.Error("send verify message to token server failed. err = %v", err)
+		return
+	}
+
+	body, err := ioutil.ReadAll(rsp.Body)
+	if err != nil {
+		log.Error("read token server response body failed, err = %v", err)
+		return
+	}
+	rsp.Body.Close()
+
+	jsonBody, err := jason.NewObjectFromBytes(body)
+	if err != nil {
+		log.Error("parse json from token server failed, err = %v", err)
+		return
+	}
+
+	// check the response from tokenServer.
+	result, err := jsonBody.GetBoolean("result")
+	if err != nil || !result {
+		errorMsg, err := jsonBody.GetString("error")
+		if err != nil {
+			SendAuthFailedToDevice(conn, "unknown error")
+		} else {
+			SendAuthFailedToDevice(conn, errorMsg)
+		}
+		return
+	}
+
+	log.Info("device = %v auth success", m)
+	SendAuthSuccesToDevice(conn)
+
+	// after auth success, try to read event message, status message, file message and dms message from device.
 	for {
 		_, message, err := conn.ReadMessage()
 		if err != nil {
@@ -84,68 +140,10 @@ func Index(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		m := &TAuth{}
-
-		if err := msgpack.Unmarshal(message, m); err != nil {
-			log.Error("not auth message")
-			continue
-		}
-
-		if m.Type != "auth" {
-			log.Error("Invalid auth msg = %v", m)
-			continue
-		}
-
-		log.Info("recv auth msg = %v", m)
-
-		// send device id and token to tokenServer to verify is valid or not.
-		rsp, err := http.PostForm("https://setup.minieye.cc/services/report/agent/token/verify",
-			url.Values{"device": {m.Device}, "token": {m.Token}})
-		if err != nil {
-			log.Error("send verify message to token server failed. err = %v", err)
-			continue
-		}
-
-		body, err := ioutil.ReadAll(rsp.Body)
-		if err != nil {
-			log.Error("read token server response body failed, err = %v", err)
-			continue
-		}
-		rsp.Body.Close()
-
-		jsonBody, err := jason.NewObjectFromBytes(body)
-		if err != nil {
-			log.Error("parse json from token server failed, err = %v", err)
-			continue
-		}
-
-		result, err := jsonBody.GetBoolean("result")
-		if err != nil || !result {
-			errorMsg, err := jsonBody.GetString("error")
-			if err != nil {
-				SendAuthFailedToDevice(conn, "unknown error")
-			} else {
-				SendAuthFailedToDevice(conn, errorMsg)
-			}
-
-			continue
-		}
-
-		log.Info("device = %v auth success", m)
-		SendAuthSuccesToDevice(conn)
-		break
-	}
-
-	// after auth success, try to read event message, status message, file message and dms message from device.
-	for {
-		_, message, err := conn.ReadMessage()
-		if err != nil {
-			log.Error("read: err = %v", err)
-			break
-		}
-
 		m := &TMsg{}
 		msgpack.Unmarshal(message, m)
+
+		//TODO you can add your code to process data here.
 
 		if m.Type != "file" {
 			log.Info("recv %s msg, msglen = %v, %v\n", m.Type, len(message), m)
