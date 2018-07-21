@@ -2,14 +2,17 @@ package main
 
 import (
 	"flag"
+	"io/ioutil"
 	"net/http"
-	"sync"
+	"net/url"
 
 	"github.com/MDGSF/utils/log"
+	"github.com/antonholmquist/jason"
 	"github.com/gorilla/websocket"
 	"github.com/vmihailenco/msgpack"
 )
 
+// TAuth device --> receiver server
 type TAuth struct {
 	Type    string `msgpack:"type"`
 	Device  string `msgpack:"device"`
@@ -19,19 +22,22 @@ type TAuth struct {
 	Time    int64  `msgpack:"time"`
 }
 
+// TAuthRet receiver server --> device
 type TAuthRet struct {
 	Type   string `msgpack:"type"`
-	Accept string `msgpack:"accept"`
-	Reason string `msgpack:"reason"`
+	Accept string `msgpack:"accept,omitempty"`
+	Reason string `msgpack:"reason,omitempty"`
 }
 
+// TMsg device send TMsg to receiver.
 type TMsg struct {
-	Type   string        `msgpack:"type"` //use string "dsm"
+	Type   string        `msgpack:"type"` //use string "status, event, file"
 	ID     string        `msgpack:"id"`   //uuid
 	Source string        `msgpack:"source"`
 	Data   []interface{} `msgpack:"data"`
 }
 
+// Ack when receiver server recv an TMsg, it will reposne an Ack to device.
 type Ack struct {
 	Type string `msgpack:"type"` // "ack"
 	ID   string `msgpack:"id"`
@@ -46,25 +52,93 @@ func main() {
 	flag.Parse()
 
 	log.Info("MockReceiver start listen at %v", *addr)
-	http.HandleFunc("/", echo)
+	http.HandleFunc("/", Index)
 	log.Fatal(http.ListenAndServe(*addr, nil))
 }
 
-func echo(w http.ResponseWriter, r *http.Request) {
-	defer func() {
-		log.Info("connection closed.")
-	}()
+func Index(w http.ResponseWriter, r *http.Request) {
 
+	// upgrade http request to websocket.
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Error("upgrade:", err)
 		return
 	}
+	defer func() {
+		conn.Close()
+	}()
 
-	log.Info("new conn comming")
+	localAddr := conn.LocalAddr().String()
+	remoteAddr := conn.RemoteAddr().String()
 
+	log.Info("new conn comming, local = %v, remote = %v", localAddr, remoteAddr)
+	defer func() {
+		log.Info("connection closed, local = %v, remote = %v", localAddr, remoteAddr)
+	}()
+
+	// try to recv device client auth message.
 	for {
-		mt, message, err := c.conn.ReadMessage()
+		_, message, err := conn.ReadMessage()
+		if err != nil {
+			log.Error("read: err = %v", err)
+			return
+		}
+
+		m := &TAuth{}
+
+		if err := msgpack.Unmarshal(message, m); err != nil {
+			log.Error("not auth message")
+			continue
+		}
+
+		if m.Type != "auth" {
+			log.Error("Invalid auth msg = %v", m)
+			continue
+		}
+
+		log.Info("recv auth msg = %v", m)
+
+		// send device id and token to tokenServer to verify is valid or not.
+		rsp, err := http.PostForm("https://setup.minieye.cc/services/report/agent/token/verify",
+			url.Values{"device": {m.Device}, "token": {m.Token}})
+		if err != nil {
+			log.Error("send verify message to token server failed. err = %v", err)
+			continue
+		}
+
+		body, err := ioutil.ReadAll(rsp.Body)
+		if err != nil {
+			log.Error("read token server response body failed, err = %v", err)
+			continue
+		}
+		rsp.Body.Close()
+
+		jsonBody, err := jason.NewObjectFromBytes(body)
+		if err != nil {
+			log.Error("parse json from token server failed, err = %v", err)
+			continue
+		}
+
+		result, err := jsonBody.GetBoolean("result")
+		if err != nil || !result {
+			errorMsg, err := jsonBody.GetString("error")
+			if err != nil {
+				SendAuthFailedToDevice(conn, "unknown error")
+			} else {
+				SendAuthFailedToDevice(conn, errorMsg)
+			}
+
+			continue
+		}
+
+		log.Info("device = %v auth success", m)
+		SendAuthSuccesToDevice(conn)
+		break
+	}
+
+	// after auth success, try to read event message, status message, file message and dms message from device.
+	for {
+		_, message, err := conn.ReadMessage()
 		if err != nil {
 			log.Error("read: err = %v", err)
 			break
@@ -74,50 +148,33 @@ func echo(w http.ResponseWriter, r *http.Request) {
 		msgpack.Unmarshal(message, m)
 
 		if m.Type != "file" {
-			log.Info("%v: %s, len = %v, %v\n", mt, m.Type, len(message), m)
+			log.Info("recv %s msg, msglen = %v, %v\n", m.Type, len(message), m)
 		} else {
-			log.Info("%v: %s, len = %v\n", mt, m.Type, len(message))
+			log.Info("recv %s msg, msglen = %v\n", m.Type, len(message))
 		}
 
 		ack := &Ack{}
 		ack.Type = "ack"
 		ack.ID = m.ID
 		data, _ := msgpack.Marshal(ack)
-		if err := c.conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
+		if err := conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
 			return
 		}
 	}
-
-	client := NewClientConn(conn)
-	client.Start()
-	<-client.Closed
 }
 
-type TClientConn struct {
-	conn   *websocket.Conn
-	Closed chan bool
-	once   sync.Once
+func SendAuthSuccesToDevice(conn *websocket.Conn) {
+	ret := &TAuthRet{Type: "auth_ok", Accept: "all"}
+	data, _ := msgpack.Marshal(ret)
+	if err := conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
+		return
+	}
 }
 
-func NewClientConn(conn *websocket.Conn) *TClientConn {
-	c := &TClientConn{}
-	c.conn = conn
-	c.Closed = make(chan bool)
-	return c
-}
-
-func (c *TClientConn) Close() {
-	c.conn.Close()
-	close(c.Closed)
-}
-
-func (c *TClientConn) Start() {
-	go c.readFromClient()
-}
-
-func (c *TClientConn) readFromClient() {
-	defer func() {
-		c.once.Do(c.Close)
-	}()
-
+func SendAuthFailedToDevice(conn *websocket.Conn, reason string) {
+	ret := &TAuthRet{Type: "auth_error", Reason: reason}
+	data, _ := msgpack.Marshal(ret)
+	if err := conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
+		return
+	}
 }
