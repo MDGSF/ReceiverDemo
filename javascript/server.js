@@ -54,12 +54,16 @@ const handleMessage = function (msg) {
 	} else {
 		if (msg.type == 'event') {
 			console.log(`device[${this.device}], event = ${JSON.stringify(msg)}`);
+			this.sendMessage({type: 'ack', id: msg.id, time: Date.now()});
 		} else if (msg.type == 'file') {
 			console.log(`device[${this.device}], file = ${JSON.stringify(msg)}`);
+			this.sendMessage({type: 'ack', id: msg.id, time: Date.now()});
 		} else if (msg.type == 'status') {
 			console.log(`device[${this.device}], status = ${JSON.stringify(msg)}`);
+			this.sendMessage({type: 'ack', id: msg.id, time: Date.now()});
 		} else if (msg.type == 'dms') {
 			console.log(`device[${this.device}], dms = ${JSON.stringify(msg)}`);
+			this.sendMessage({type: 'ack', id: msg.id, time: Date.now()});
 		} else {
 			console.log(`device[${this.device}], unknown msg ${JSON.stringify(msg)}`);
 		}
