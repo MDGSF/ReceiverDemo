@@ -39,8 +39,8 @@ const handleMessage = function (msg) {
 			verifyToken(msg.device, msg.token)
 			.then(ok => {
 				this.sendMessage({type: 'auth_ok', accept: 'all'});
-				ws.established = true;
-				ws.device = msg.device;
+				this.established = true;
+				this.device = msg.device;
 			})
 			.catch(err => {
 				this.sendMessage({type: 'auth_error', reason: err.message});
