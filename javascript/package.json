@@ -8,5 +8,9 @@
     "start": "node server.js"
   },
   "author": "HuangJian",
-  "license": "ISC"
+  "license": "ISC",
+  "dependencies": {
+    "request-promise-native": "^1.0.5",
+    "ws": "^6.0.0"
+  }
 }

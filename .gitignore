@@ -1,0 +1,5 @@
+.*.swp
+node_modules
+.idea
+.DS_Store
+/etc/local_config.js
