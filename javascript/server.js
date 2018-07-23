@@ -11,23 +11,23 @@ const verifyToken = async function (device, token) {
 	let body, res;
 
 	try {
-	  body = await rp(options);
+		body = await rp(options);
 	} catch (req) {
-	  throw new Error(req.message);
+		throw new Error(req.message);
 	}
-	
+
 	try {
-	  res = JSON.parse(body);
+		res = JSON.parse(body);
 	} catch (err) {
-	  throw new Error('malformed response body');
+		throw new Error('malformed response body');
 	}
-	
+
 	if (res.result === true) {
-	  return true;
+		return true;
 	} else if (res.error) {
-	  throw new Error(res.error);
+		throw new Error(res.error);
 	} else {
-	  throw new Error('malformed response object');
+		throw new Error('malformed response object');
 	}
 };
 
